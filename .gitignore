@@ -30,6 +30,7 @@ modules.builtin
 *.lzma
 *.xz
 *.lzo
+*.lz4
 *.patch
 *.gcno
 
@@ -81,6 +82,7 @@ GSYMS
 GTAGS
 
 *.orig
+*.rej
 *~
 \#*#
 
@@ -91,3 +93,44 @@ extra_certificates
 signing_key.priv
 signing_key.x509
 x509.genkey
+
+# kernel builds
+Image
+zImage
+xipImage
+bootpImage
+uImage
+*.dtb
+zImage-dtb 
+zImage-dtb
+dt.img
+
+# Flashable packages
+*.zip
+
+# scripts
+~.sh
+scripts/*
+
+# SELinux generated includes
+av_permissions.h
+flask.h
+
+# Others
+defconfig
+ashldi3.S
+hyp-stub.S
+lib1funcs.S
+piggy.gzip
+vmlinux
+vmlinux.lds
+vmlinux.lds
+hz.bc
+timeconst.h
+crc32table.h
+gen_crc32table
+gen_init_cpio
+initramfs_data.cpio
+firmware/*
+output/*
+dt_img/dt_img_gpve.img
