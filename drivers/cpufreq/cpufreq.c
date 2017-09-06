@@ -91,6 +91,10 @@ static void unlock_policy_rwsem_##mode(int cpu)				\
 unlock_policy_rwsem(read, cpu);
 unlock_policy_rwsem(write, cpu);
 
+#ifdef CONFIG_CPU_FREQ_LIMIT
+static atomic_t wait_cpufreq = ATOMIC_INIT(0); /*add atomic wait_cpufreq variable to prevent cpufreq_policy_cpu value being setting to -1*/
+#endif
+
 /* internal prototypes */
 static int __cpufreq_governor(struct cpufreq_policy *policy,
 		unsigned int event);
@@ -252,6 +256,13 @@ static inline void adjust_jiffies(unsigned long val, struct cpufreq_freqs *ci)
 void __cpufreq_notify_transition(struct cpufreq_policy *policy,
 		struct cpufreq_freqs *freqs, unsigned int state)
 {
+
+	if(!policy) /*ignore to change freq when policy is NULL */
+	{
+		pr_debug("have not policy for transition notify");
+		return;
+	}
+
 	BUG_ON(irqs_disabled());
 
 	if (cpufreq_disabled())
@@ -305,6 +316,13 @@ void __cpufreq_notify_transition(struct cpufreq_policy *policy,
 void cpufreq_notify_transition(struct cpufreq_policy *policy,
 		struct cpufreq_freqs *freqs, unsigned int state)
 {
+
+	if(!policy) /*ignore to change freq when policy is NULL */
+	{
+		pr_debug("have not policy for transition notify");
+		return;
+	}
+
 	for_each_cpu(freqs->cpu, policy->cpus)
 		__cpufreq_notify_transition(policy, freqs, state);
 }
@@ -866,7 +884,6 @@ static int cpufreq_add_dev(struct device *dev, struct subsys_interface *sif)
 	if (cpu_is_offline(cpu))
 		return 0;
 
-	pr_debug("adding CPU %u\n", cpu);
 
 #ifdef CONFIG_SMP
 	/* check whether a different CPU already registered this
@@ -1099,15 +1116,23 @@ static int __cpufreq_remove_dev(struct device *dev, struct subsys_interface *sif
 
 		free_cpumask_var(data->related_cpus);
 		free_cpumask_var(data->cpus);
+		pr_debug("policy %d is freed\n",data->cpu);
 		kfree(data);
 	} else {
-		pr_debug("%s: removing link, cpu: %d\n", __func__, cpu);
+		pr_debug("%s: removing link, cpu: %d policy[%d] %x\n", __func__, cpu,data->cpu,data);
 		cpufreq_cpu_put(data);
 		if (cpufreq_driver->target) {
 			__cpufreq_governor(data, CPUFREQ_GOV_START);
 			__cpufreq_governor(data, CPUFREQ_GOV_LIMITS);
 		}
 	}
+
+#ifdef CONFIG_CPU_FREQ_LIMIT
+	while (atomic_read(&wait_cpufreq) != 0){
+		pr_warn("cpu %d offline thread should wait until TSP irq thread finish updating cpufreq policy \n",cpu);
+		msleep(1);
+	}
+#endif
 
 	per_cpu(cpufreq_policy_cpu, cpu) = -1;
 	return 0;
@@ -1782,9 +1807,18 @@ error_out:
  */
 int cpufreq_update_policy(unsigned int cpu)
 {
+#ifdef CONFIG_CPU_FREQ_LIMIT
+	struct cpufreq_policy *data = NULL;
+#else
 	struct cpufreq_policy *data = cpufreq_cpu_get(cpu);
+#endif
 	struct cpufreq_policy policy;
 	int ret;
+
+#ifdef CONFIG_CPU_FREQ_LIMIT
+	atomic_inc(&wait_cpufreq);
+	data = cpufreq_cpu_get(cpu);
+#endif
 
 	if (!data) {
 		ret = -ENODEV;
@@ -1824,6 +1858,11 @@ int cpufreq_update_policy(unsigned int cpu)
 fail:
 	cpufreq_cpu_put(data);
 no_policy:
+
+#ifdef CONFIG_CPU_FREQ_LIMIT
+	atomic_dec(&wait_cpufreq);
+#endif
+
 	return ret;
 }
 EXPORT_SYMBOL(cpufreq_update_policy);

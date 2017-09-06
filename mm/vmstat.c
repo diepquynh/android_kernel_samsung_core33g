@@ -19,10 +19,18 @@
 #include <linux/math64.h>
 #include <linux/writeback.h>
 #include <linux/compaction.h>
+#include <linux/mm_inline.h>
+
+#include "internal.h"
 
 #ifdef CONFIG_VM_EVENT_COUNTERS
 DEFINE_PER_CPU(struct vm_event_state, vm_event_states) = {{0}};
 EXPORT_PER_CPU_SYMBOL(vm_event_states);
+
+#ifdef CONFIG_CMA
+#include <linux/vmalloc.h>
+#include <linux/cmainfo.h>
+#endif
 
 static void sum_vm_events(unsigned long *ret)
 {
@@ -887,6 +895,79 @@ static int pagetypeinfo_showfree(struct seq_file *m, void *arg)
 	return 0;
 }
 
+#ifdef CONFIG_CMA
+void cmatypeinfo_showfree_print(struct seq_file *m, unsigned long totalcma)
+{
+	unsigned long cmafreecount = 0;
+	phys_addr_t pg;
+	int order,i,count = 0;
+	struct zone *zone2;
+	unsigned long flags;
+	free_block_t *ret_addr = NULL;
+
+	/* allocating memory for the free_block to store all the free CMA pages
+	 */
+	seq_printf(m,"\nFree CMA memory blocks: \n");
+
+	ret_addr = (free_block_t *)vzalloc(sizeof(free_block_t)*
+				((totalcma * SZ_1K)/ PAGE_SIZE) + 1);
+	if(!ret_addr)
+	{
+		seq_printf(m,"Cannot show free CMA blocks. Try again...\n");
+		return;
+	}
+
+	for_each_populated_zone(zone2) {
+		for(order = 0; order < MAX_ORDER ; ++order) {
+			int order_count = 0;
+			struct free_area *area;
+			struct list_head *curr;
+
+			spin_lock_irqsave(&zone2->lock, flags);
+			area = &(zone2->free_area[order]);
+
+			if (list_empty(&area->free_list[MIGRATE_CMA])) {
+				spin_unlock_irqrestore(&zone2->lock, flags);
+				continue;
+			}
+
+			count = 0;
+			list_for_each(curr, &area->free_list[MIGRATE_CMA]) {
+				struct page *temp;
+				temp = list_entry(curr,struct page,lru);
+				pg = page_to_phys(temp);
+
+				seq_printf(m,"page address: 0x%08lx	"\
+						"block_order: %d"\
+						"size:%lu kB\n",
+						pg, order, (1<<order)*4);
+				ret_addr[count].phys_addr = pg;
+				ret_addr[count].block_order = order;
+				count++;
+				order_count++;
+			}
+
+			spin_unlock_irqrestore(&zone2->lock, flags);
+			cmafreecount += order_count*(1 << order);
+		}
+
+		if(count != 0)
+			seq_printf(m,"\nMaximum chunk(s) available: \n");
+		else
+			seq_printf(m,"No free CMA memory available \n");
+
+		for(i = 0; i < count; ++i)
+			seq_printf(m,"page address: 0x%08lx		"\
+					"block_order: %d		"\
+					"size:%lu kB\n", ret_addr[i].phys_addr,
+					ret_addr[i].block_order,
+					(1<<ret_addr[i].block_order)*4);
+	}
+
+	vfree(ret_addr);
+}
+#endif
+
 static void pagetypeinfo_showblockcount_print(struct seq_file *m,
 					pg_data_t *pgdat, struct zone *zone)
 {
@@ -1052,7 +1133,7 @@ static void zoneinfo_show_print(struct seq_file *m, pg_data_t *pgdat,
 		   "\n  all_unreclaimable: %u"
 		   "\n  start_pfn:         %lu"
 		   "\n  inactive_ratio:    %u",
-		   zone->all_unreclaimable,
+		   !zone_reclaimable(zone),
 		   zone->zone_start_pfn,
 		   zone->inactive_ratio);
 	seq_putc(m, '\n');

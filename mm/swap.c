@@ -38,6 +38,11 @@
 /* How many pages do we try to swap or page in/out together? */
 int page_cluster;
 
+#ifdef CONFIG_CMA
+#include <linux/cmainfo.h>
+static struct lruvec *lruvec_base = NULL;
+#endif
+
 static DEFINE_PER_CPU(struct pagevec[NR_LRU_LISTS], lru_add_pvecs);
 static DEFINE_PER_CPU(struct pagevec, lru_rotate_pvecs);
 static DEFINE_PER_CPU(struct pagevec, lru_deactivate_pvecs);
@@ -403,6 +408,10 @@ static void update_page_reclaim_stat(struct lruvec *lruvec,
 static void __activate_page(struct page *page, struct lruvec *lruvec,
 			    void *arg)
 {
+
+#ifdef CONFIG_CMA
+	lruvec_base = lruvec;
+#endif
 	if (PageLRU(page) && !PageActive(page) && !PageUnevictable(page)) {
 		int file = page_is_file_cache(page);
 		int lru = page_lru_base_type(page);
@@ -416,6 +425,56 @@ static void __activate_page(struct page *page, struct lruvec *lruvec,
 		update_page_reclaim_stat(lruvec, file, 1);
 	}
 }
+#ifdef CONFIG_CMA
+/*
+ * It uses the temp variable initialized to lru vector head to iterate
+ * through the active and inactive page list to find the
+ * corresponding active and inactive CMA anonymous and CMA file pages.
+ */
+void cma_page_type_det(cmainfo_t *cmainfo)
+{
+	int i, j;
+	struct page *pg_dat;
+	phys_addr_t pg;
+	struct list_head *curr;
+/* NR_LRU_LISTS = {	0: inactive anonymous pages
+ *			1: active anonymous pages
+ *			2: inactive file pages
+ *			3: active file pages}
+ * corresponding counters are incremented
+ */
+	for(i = 0; i < NR_LRU_LISTS; i++) {
+		list_for_each(curr, &lruvec_base->lists[i]){
+			pg_dat = list_entry(curr,struct page,lru);
+			pg = page_to_phys(pg_dat);
+
+			/* The cma global/dev start and end are the
+			 * physical addresses of the CMA declared.
+			 */
+			  for (j = 0; j < cmainfo->nr_cma_areas; j++) {
+				if((
+				  (cmainfo->cma_areas[j].cma_phy_start) <= pg)
+				  && ((cmainfo->cma_areas[j].cma_phy_end) >=pg)) {
+					switch(i){
+						case 0:
+						 cmainfo->cma_inactive_anon++;
+						 break;
+						case 1:
+						 cmainfo->cma_active_anon++;
+						 break;
+						case 2:
+						 cmainfo->cma_inactive_file++;
+						 break;
+						case 3:
+						 cmainfo->cma_active_file++;
+						 break;
+					}
+				}
+			}
+		}
+	}
+}
+#endif
 
 #ifdef CONFIG_SMP
 static DEFINE_PER_CPU(struct pagevec, activate_page_pvecs);

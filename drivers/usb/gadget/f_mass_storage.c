@@ -273,6 +273,7 @@ struct fsg_common {
 	u8			cmnd[MAX_COMMAND_SIZE];
 
 	unsigned int		nluns;
+	unsigned int		board_support_luns;
 	unsigned int		lun;
 	struct fsg_lun		*luns;
 	struct fsg_lun		*curlun;
@@ -311,6 +312,7 @@ struct fsg_common {
 	char inquiry_string[8 + 16 + 4 + 1];
 
 	struct kref		ref;
+	struct work_struct fsync_work;
 };
 
 struct fsg_config {
@@ -546,7 +548,7 @@ static int fsg_setup(struct usb_function *f,
 				w_length != 1)
 			return -EDOM;
 		VDBG(fsg, "get max LUN\n");
-		*(u8 *)req->buf = fsg->common->nluns - 1;
+		*(u8 *)req->buf = fsg->common->board_support_luns - 1;
 
 		/* Respond with data/status */
 		req->length = min((u16)1, w_length);
@@ -1214,7 +1216,50 @@ static int do_read_toc(struct fsg_common *common, struct fsg_buffhd *bh)
 	int		msf = common->cmnd[1] & 0x02;
 	int		start_track = common->cmnd[6];
 	u8		*buf = (u8 *)bh->buf;
+#ifdef CONFIG_USB_SPRD_DWC
+	// Seen in MMC5RC01 6.32 READ TOC/PMA/ATIP Command
+	u8 toc_response_data1[] = {
+		0x00, 0x12, 0x01, 0x01, 0x00, 0x14, 0x01, 0x00,
+		0x00, 0x00, 0x00, 0x00
+	};
+	u8 toc_response_data2[] = {
+		0x00, 0x2e, 0x01, 0x01, 0x01, 0x14, 0x00, 0xa0,
+		0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x01,
+		0x14, 0x00, 0xa1, 0x00, 0x00, 0x00, 0x00, 0x01,
+		0x00, 0x00, 0x01, 0x14, 0x00, 0xa2, 0x00, 0x00,
+		0x00, 0x00, 0x09, 0x0c, 0x94, 0x14, 0xf2, 0x00,
+		0xa8, 0x14, 0xf2, 0x00, 0xbc, 0x14, 0xf2, 0x00
+	};
+	u8 toc_response_data3[] = {
+		0x00, 0x2e, 0x01, 0x01, 0x01, 0x14, 0x00, 0xa0,
+		0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x01,
+		0x14, 0x00, 0xa1, 0x00, 0x00, 0x00, 0x00, 0x01,
+		0x00, 0x00, 0x01, 0x14, 0x00, 0xa2, 0x00, 0x00,
+		0x00, 0x00, 0x09, 0x0c, 0x94, 0x14, 0xf2, 0x00,
+		0xa8, 0x14, 0xf2, 0x00, 0xbc, 0x14, 0xf2, 0x00,
+		0xd0, 0x14, 0xf2, 0x00, 0xe4, 0x14, 0xf2, 0x00,
+		0x12, 0x00, 0x12, 0x00, 0x12, 0x00, 0x12, 0x00,
+		0x12, 0x00, 0x34, 0x35, 0x33, 0x32, 0x33, 0x32,
+		0x33, 0x38, 0x00, 0x00, 0xf0, 0x00, 0x05, 0x00,
+		0x00, 0x00, 0x00, 0x0a
+	};
+	int rc = 0;
+	u8* data;
+	if(common->data_size_from_cmnd == 0xc){
+		rc = sizeof toc_response_data1;
+		data = toc_response_data1;
+	}else if(msf == 0x1){
+		rc = sizeof toc_response_data2;
+		data = toc_response_data2;
+	}else{
+		rc = sizeof toc_response_data3;
+		data = toc_response_data3;
+	}
+	rc = rc < common->data_size_from_cmnd ? rc : common->data_size_from_cmnd;
+	memcpy(buf, data, rc);
+	return rc;
 
+#else
 	if ((common->cmnd[1] & ~0x02) != 0 ||	/* Mask away MSF */
 			start_track > 1) {
 		curlun->sense_data = SS_INVALID_FIELD_IN_CDB;
@@ -1233,6 +1278,8 @@ static int do_read_toc(struct fsg_common *common, struct fsg_buffhd *bh)
 	buf[14] = 0xAA;			/* Lead-out track number */
 	store_cdrom_address(&buf[16], msf, curlun->num_sectors);
 	return 20;
+
+#endif
 }
 
 static int do_mode_sense(struct fsg_common *common, struct fsg_buffhd *bh)
@@ -1389,10 +1436,33 @@ static int do_prevent_allow(struct fsg_common *common)
 		return -EINVAL;
 	}
 
-	if (curlun->prevent_medium_removal && !prevent)
+	if (!curlun->nofua && curlun->prevent_medium_removal && !prevent)
 		fsg_lun_fsync_sub(curlun);
+	else
+		schedule_work(&common->fsync_work);
+
 	curlun->prevent_medium_removal = prevent;
 	return 0;
+}
+
+static void do_fsync(struct work_struct *work)
+{
+	struct fsg_common *common =
+		container_of(work, struct fsg_common, fsync_work);
+
+	struct file	*filp = common->curlun->filp;
+	static int syncing = 0;
+
+	if (common->curlun->ro || !filp)
+		return;
+
+	if(!syncing) {
+		syncing = 1;
+		printk("ums sync 1\n");
+		vfs_fsync(filp, 1);
+		printk("ums sync 0\n");
+		syncing = 0;
+	}
 }
 
 static int do_read_format_capacities(struct fsg_common *common,
@@ -1576,6 +1646,17 @@ static int finish_reply(struct fsg_common *common)
 		 */
 		} else {
 			bh->inreq->zero = 1;
+#ifdef CONFIG_USB_SPRD_DWC
+			if (common->curlun->sense_data && common->can_stall 
+				&& common->cmnd[0] != INQUIRY && common->cmnd[0] != REQUEST_SENSE){
+				rc = halt_bulk_in_endpoint(common->fsg);
+				bh->inreq_busy = 0;
+				bh->state = BUF_STATE_EMPTY;
+				common->next_buffhd_to_fill = bh->next;
+				common->state = FSG_STATE_IDLE;
+				return 0;
+			}
+#endif
 			if (!start_in_transfer(common, bh))
 				rc = -EIO;
 			common->next_buffhd_to_fill = bh->next;
@@ -1967,7 +2048,7 @@ static int do_scsi_command(struct fsg_common *common)
 		common->data_size_from_cmnd =
 			get_unaligned_be16(&common->cmnd[7]);
 		reply = check_command(common, 10, DATA_DIR_TO_HOST,
-				      (7<<6) | (1<<1), 1,
+				      (0xf<<6) | (3<<1), 1,
 				      "READ TOC");
 		if (reply == 0)
 			reply = do_read_toc(common, bh);
@@ -2277,6 +2358,10 @@ reset:
 
 	common->fsg = new_fsg;
 	fsg = common->fsg;
+	if(new_fsg->common != common){
+		printk("%s new_fsg->common = 0x%x common = 0x%x\n",__func__,new_fsg->common,common);
+		return rc;
+	}
 
 	/* Enable the endpoints */
 	rc = config_ep_by_speed(common->gadget, &(fsg->function), fsg->bulk_in);
@@ -2581,6 +2666,7 @@ static int fsg_main_thread(void *common_)
 static DEVICE_ATTR(ro, 0644, fsg_show_ro, fsg_store_ro);
 static DEVICE_ATTR(nofua, 0644, fsg_show_nofua, fsg_store_nofua);
 static DEVICE_ATTR(file, 0644, fsg_show_file, fsg_store_file);
+static DEVICE_ATTR(cdrom, 0644, fsg_show_cdrom, fsg_store_cdrom);
 
 static struct device_attribute dev_attr_ro_cdrom =
 	__ATTR(ro, 0444, fsg_show_ro, NULL);
@@ -2655,7 +2741,9 @@ static struct fsg_common *fsg_common_init(struct fsg_common *common,
 	common->ep0 = gadget->ep0;
 	common->ep0req = cdev->req;
 	common->cdev = cdev;
-
+#ifdef CONFIG_USB_SPRD_DWC
+	common->can_stall = 1;
+#endif
 	/* Maybe allocate device-global string IDs, and patch descriptors */
 	if (fsg_strings[FSG_STRING_INTERFACE].id == 0) {
 		rc = usb_string_id(cdev);
@@ -2683,6 +2771,7 @@ static struct fsg_common *fsg_common_init(struct fsg_common *common,
 		curlun->ro = lcfg->cdrom || lcfg->ro;
 		curlun->initially_ro = curlun->ro;
 		curlun->removable = lcfg->removable;
+		curlun->nofua = lcfg->nofua;
 		curlun->dev.release = fsg_lun_release;
 		curlun->dev.parent = &gadget->dev;
 		/* curlun->dev.driver = &fsg_driver.driver; XXX */
@@ -2712,6 +2801,9 @@ static struct fsg_common *fsg_common_init(struct fsg_common *common,
 		rc = device_create_file(&curlun->dev, &dev_attr_nofua);
 		if (rc)
 			goto error_luns;
+		rc = device_create_file(&curlun->dev, &dev_attr_cdrom);
+		if (rc)
+			goto error_luns;
 
 		if (lcfg->filename) {
 			rc = fsg_lun_open(curlun, lcfg->filename);
@@ -2724,6 +2816,7 @@ static struct fsg_common *fsg_common_init(struct fsg_common *common,
 		}
 	}
 	common->nluns = nluns;
+	common->board_support_luns = nluns;
 
 	/* Data buffers cyclic list */
 	bh = common->buffhds;
@@ -2771,6 +2864,8 @@ buffhds_first_it:
 	}
 	init_completion(&common->thread_notifier);
 	init_waitqueue_head(&common->fsg_wait);
+
+	INIT_WORK(&common->fsync_work, &do_fsync);
 
 	/* Information */
 	INFO(common, FSG_DRIVER_DESC ", version: " FSG_DRIVER_VERSION "\n");
@@ -2838,6 +2933,7 @@ static void fsg_common_release(struct kref *ref)
 					   lun->removable
 					 ? &dev_attr_file
 					 : &dev_attr_file_nonremovable);
+			device_remove_file(&lun->dev, &dev_attr_cdrom);
 			fsg_lun_close(lun);
 			device_unregister(&lun->dev);
 		}

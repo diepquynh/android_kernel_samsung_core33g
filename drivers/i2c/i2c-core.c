@@ -406,13 +406,103 @@ show_modalias(struct device *dev, struct device_attribute *attr, char *buf)
 	return sprintf(buf, "%s%s\n", I2C_MODULE_PREFIX, client->name);
 }
 
+/*
+ * format:
+ * cmd[1byte] length[1byte] [data...]
+ *
+ * using method:
+ * ADB="adb wait-for-device"
+ * ${ADB} root; ${ADB} shell "stop slog"
+ * ${ADB} shell "cat /proc/kmsg" | grep i2c &
+ *
+ * base_dir=/sys/devices/i2c_gpio.22/i2c-6/6-0049
+ *
+ * ${ADB} shell "echo -n -e '\x0d\x01' > ${base_dir}/read"
+ * ${ADB} shell "echo -n -e '\x0d\x01\x1f' > ${base_dir}/write"
+ *
+ * ${ADB} shell "echo -n -e '\x0b\x01' > ${base_dir}/read"
+ * ${ADB} shell "echo -n -e '\x0b\x01\x03' > ${base_dir}/write"
+ *
+ * for i in 1 2 3 4 5 6 7 8 9 a b c d e f 10 11 12 13 14 15; do
+ * 	${ADB} shell "echo -n -e \"\x${i}\x01\" > ${base_dir}/read"
+ * done
+ */
+static u8 read_buf_len;
+static u8 write_buf_len;
+static u8 read_buf[257];
+static u8 write_buf[257];
+#define _I2CCLIENT_OP(x) \
+	char format_buf[512] = { 0 }; \
+	u8 command; u8 length; \
+	struct i2c_client *client = to_i2c_client(dev); \
+	/* sscanf(buf, "%x,%x,%n", &command, &length, &offset); */ \
+	command = buf[0]; length = buf[1]; \
+	if (x) { \
+		read_buf_len = length; \
+		i2c_smbus_read_i2c_block_data(client, command, length, read_buf); \
+		format_hexstring(format_buf, read_buf, read_buf_len); \
+	} else { \
+		write_buf_len = 2 + length; \
+		memcpy(write_buf, buf, write_buf_len); \
+		i2c_smbus_write_i2c_block_data(client, command, length, buf + 2); \
+		format_hexstring(format_buf, write_buf, write_buf_len); \
+	} \
+	pr_warn("i2c-%s_%c cmd=%02x, len=%02x\n%s\n", client->name, x ? 'R':'W', \
+			command, length, format_buf); \
+	return size;
+
+static inline ssize_t format_hexstring(char *result, char *data, u32 len)
+{
+	int count = 0;
+	char *p = result;
+	for (; len; len--) {
+		if ((count % 8) == 0)
+			p += sprintf(p, "%s: ", "i2c");
+		else
+			p += sprintf(p, " ");
+		p += sprintf(p, "%02x", *data++);
+		if ((++count % 8) == 0)
+			p += sprintf(p, "\n");
+	}
+	p += sprintf(p, "\n");
+	return p - result;
+}
+
+static ssize_t
+show_read(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	return format_hexstring(buf, read_buf, read_buf_len);
+}
+
+static ssize_t
+store_read(struct device *dev, struct device_attribute *attr, const char *buf, size_t size)
+{
+	_I2CCLIENT_OP(1);
+}
+
+static ssize_t
+show_write(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	return format_hexstring(buf, write_buf, write_buf_len);
+}
+
+static ssize_t
+store_write(struct device *dev, struct device_attribute *attr, const char *buf, size_t size)
+{
+	_I2CCLIENT_OP(0);
+}
+
 static DEVICE_ATTR(name, S_IRUGO, show_name, NULL);
 static DEVICE_ATTR(modalias, S_IRUGO, show_modalias, NULL);
+static DEVICE_ATTR(read, S_IRUGO | S_IWUSR, show_read, store_read);
+static DEVICE_ATTR(write, S_IRUGO | S_IWUSR, show_write, store_write);
 
 static struct attribute *i2c_dev_attrs[] = {
 	&dev_attr_name.attr,
 	/* modalias helps coldplug:  modprobe $(cat .../modalias) */
 	&dev_attr_modalias.attr,
+	&dev_attr_read.attr,
+	&dev_attr_write.attr,
 	NULL
 };
 

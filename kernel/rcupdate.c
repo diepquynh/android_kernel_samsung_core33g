@@ -202,6 +202,61 @@ static void wakeme_after_rcu(struct rcu_head  *head)
 	complete(&rcu->completion);
 }
 
+#define RCU_STUCK_DEBUG
+#ifdef RCU_STUCK_DEBUG
+/* To trigger panic when happening rcu stuck issue */
+struct rcu_watchdog {
+    struct task_struct	*tsk;
+    struct timer_list	timer;
+};
+
+static void rcu_wd_handler(unsigned long data)
+{
+	struct rcu_watchdog *wd = (void *)data;
+	struct task_struct *tsk = wd->tsk;
+
+	printk("**** RCU sync timeout ****\n");
+	show_stack(tsk, NULL);
+	BUG();
+}
+static void rcu_wd_set(struct rcu_watchdog *wd)
+{
+	struct timer_list *timer = &wd->timer;
+
+	wd->tsk = current;
+
+	init_timer_on_stack(timer);
+	timer->expires = jiffies + HZ * 10;
+	timer->function = rcu_wd_handler;
+	timer->data = (unsigned long)wd;
+	add_timer(timer);
+}
+
+static void rcu_wd_clear(struct rcu_watchdog *wd)
+{
+	struct timer_list *timer = &wd->timer;
+
+	del_timer_sync(timer);
+	destroy_timer_on_stack(timer);
+}
+
+void wait_rcu_gp(call_rcu_func_t crf)
+{
+	struct rcu_synchronize rcu;
+	struct rcu_watchdog wd;
+	init_rcu_head_on_stack(&rcu.head);
+	init_completion(&rcu.completion);
+	rcu_wd_set(&wd);
+	/* Will wake me after RCU finished. */
+	crf(&rcu.head, wakeme_after_rcu);
+	/* Wait for it. */
+	wait_for_completion(&rcu.completion);
+	rcu_wd_clear(&wd);
+	destroy_rcu_head_on_stack(&rcu.head);
+}
+EXPORT_SYMBOL_GPL(wait_rcu_gp);
+
+#else
 void wait_rcu_gp(call_rcu_func_t crf)
 {
 	struct rcu_synchronize rcu;
@@ -215,6 +270,7 @@ void wait_rcu_gp(call_rcu_func_t crf)
 	destroy_rcu_head_on_stack(&rcu.head);
 }
 EXPORT_SYMBOL_GPL(wait_rcu_gp);
+#endif
 
 #ifdef CONFIG_PROVE_RCU
 /*

@@ -24,6 +24,7 @@
 #endif /* CONFIG_PPC */
 
 #include <asm/page.h>
+#include <asm/system_info.h>
 
 char *of_fdt_get_string(struct boot_param_header *blob, u32 offset)
 {
@@ -666,6 +667,7 @@ int __init early_init_dt_scan_chosen(unsigned long node, const char *uname,
 {
 	unsigned long l;
 	char *p;
+	__be32 *serial;
 
 	pr_debug("search \"chosen\", depth: %d, uname: %s\n", depth, uname);
 
@@ -680,6 +682,11 @@ int __init early_init_dt_scan_chosen(unsigned long node, const char *uname,
 	if (p != NULL && l > 0)
 		strlcpy(data, p, min((int)l, COMMAND_LINE_SIZE));
 
+	serial = of_get_flat_dt_prop(node, "serial", &l);
+	if (serial != NULL && l > 0) {
+		system_serial_low = *(serial++);
+		system_serial_high = *(serial);
+	}
 	/*
 	 * CONFIG_CMDLINE is meant to be a default in case nothing else
 	 * managed to set the command line, unless CONFIG_CMDLINE_FORCE

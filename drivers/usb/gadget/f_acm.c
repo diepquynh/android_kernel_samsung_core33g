@@ -645,6 +645,13 @@ acm_bind(struct usb_configuration *c, struct usb_function *f)
 
 	status = -ENODEV;
 
+#ifdef CONFIG_USB_G_ANDROID_SAMSUNG_COMPOSITE
+	if (acm->port_num == ACM_MODEM_PORT)
+		acm_data_interface_desc.bInterfaceProtocol = 0x00;
+	else if (acm->port_num == ACM_LOGGING_PORT)
+		acm_data_interface_desc.bInterfaceProtocol = 0xFF;
+#endif
+
 	/* allocate instance-specific endpoints */
 	ep = usb_ep_autoconfig(cdev->gadget, &acm_fs_in_desc);
 	if (!ep)

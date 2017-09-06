@@ -81,6 +81,9 @@ config GPIO_SYSFS
 	  Kernel drivers may also request that a particular GPIO be
 	  exported to userspace; this can be useful when debugging.
 
+config SEC_GPIO_DVS
+	tristate "setting Samsung GPIO debuggin and verification system"
+
 config GPIO_GENERIC
 	tristate
 

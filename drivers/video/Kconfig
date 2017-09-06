@@ -23,6 +23,10 @@ source "drivers/gpu/drm/Kconfig"
 
 source "drivers/gpu/host1x/Kconfig"
 
+source "drivers/gpu/ion/Kconfig"
+
+source "drivers/gpu/sprd_iommu/Kconfig"
+
 config VGASTATE
        tristate
        default n
@@ -2469,6 +2473,8 @@ config FB_SIMPLE
 	  Configuration re: surface address, size, and format must be provided
 	  through device tree, or potentially plain old platform data in the
 	  future.
+
+source "drivers/video/sprdfb/Kconfig"
 
 source "drivers/video/omap/Kconfig"
 source "drivers/video/omap2/Kconfig"

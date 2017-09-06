@@ -576,6 +576,7 @@ static int
 cpu_hotplug_pm_callback(struct notifier_block *nb,
 			unsigned long action, void *ptr)
 {
+	printk("*** %s, action:0x%x ***\n", __func__, action );
 	switch (action) {
 
 	case PM_SUSPEND_PREPARE:
@@ -591,6 +592,7 @@ cpu_hotplug_pm_callback(struct notifier_block *nb,
 	default:
 		return NOTIFY_DONE;
 	}
+	printk("*** %s, action:0x%x done ***\n", __func__, action );
 
 	return NOTIFY_OK;
 }
@@ -726,3 +728,23 @@ void init_cpu_online(const struct cpumask *src)
 {
 	cpumask_copy(to_cpumask(cpu_online_bits), src);
 }
+
+static ATOMIC_NOTIFIER_HEAD(idle_notifier);
+
+void idle_notifier_register(struct notifier_block *n)
+{
+	atomic_notifier_chain_register(&idle_notifier, n);
+}
+EXPORT_SYMBOL_GPL(idle_notifier_register);
+
+void idle_notifier_unregister(struct notifier_block *n)
+{
+	atomic_notifier_chain_unregister(&idle_notifier, n);
+}
+EXPORT_SYMBOL_GPL(idle_notifier_unregister);
+
+void idle_notifier_call_chain(unsigned long val)
+{
+	atomic_notifier_call_chain(&idle_notifier, val, NULL);
+}
+EXPORT_SYMBOL_GPL(idle_notifier_call_chain);

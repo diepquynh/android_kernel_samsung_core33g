@@ -33,10 +33,19 @@
 #include <linux/mm_types.h>
 #include <linux/dma-contiguous.h>
 
+#ifdef CONFIG_CMA
+#include <linux/cmainfo.h>
+static phys_addr_t cmalimit = 0;
+static unsigned long dma_declare_count = 0;
+static cma_area_t cma_areas[NR_CMA_AREA] = {0};
+#endif
+
 struct cma {
 	unsigned long	base_pfn;
 	unsigned long	count;
 	unsigned long	*bitmap;
+	unsigned long	cma_count;
+	unsigned long	threshold_count;
 };
 
 struct cma *dma_contiguous_default_area;
@@ -128,7 +137,7 @@ void __init dma_contiguous_reserve(phys_addr_t limit)
 		pr_debug("%s: reserving %ld MiB for global area\n", __func__,
 			 (unsigned long)selected_size / SZ_1M);
 
-		dma_declare_contiguous(NULL, selected_size, 0, limit);
+		dma_contiguous_reserve_area(NULL, selected_size, 0, limit, 0, 0);
 	}
 };
 
@@ -157,13 +166,15 @@ static __init int cma_activate_area(unsigned long base_pfn, unsigned long count)
 }
 
 static __init struct cma *cma_create_area(unsigned long base_pfn,
-				     unsigned long count)
+				     unsigned long count, unsigned long cma_count,
+				     unsigned long threshold_count)
 {
 	int bitmap_size = BITS_TO_LONGS(count) * sizeof(long);
 	struct cma *cma;
 	int ret = -ENOMEM;
 
-	pr_debug("%s(base %08lx, count %lx)\n", __func__, base_pfn, count);
+	pr_debug("%s(base %08lx, count %lx, cma_count %lx, threshold_count %lx)\n",
+		 __func__, base_pfn, count, cma_count, threshold_count);
 
 	cma = kmalloc(sizeof *cma, GFP_KERNEL);
 	if (!cma)
@@ -172,13 +183,17 @@ static __init struct cma *cma_create_area(unsigned long base_pfn,
 	cma->base_pfn = base_pfn;
 	cma->count = count;
 	cma->bitmap = kzalloc(bitmap_size, GFP_KERNEL);
+	cma->cma_count = cma_count;
+	cma->threshold_count = threshold_count;
 
 	if (!cma->bitmap)
 		goto no_mem;
 
-	ret = cma_activate_area(base_pfn, count);
-	if (ret)
-		goto error;
+	if(cma_count) {
+		ret = cma_activate_area(base_pfn, cma_count);
+		if (ret)
+			goto error;
+	}
 
 	pr_debug("%s: returned %p\n", __func__, (void *)cma);
 	return cma;
@@ -194,6 +209,8 @@ static struct cma_reserved {
 	phys_addr_t start;
 	unsigned long size;
 	struct device *dev;
+	unsigned long cma_size;
+	unsigned long threshold_size;
 } cma_reserved[MAX_CMA_AREAS] __initdata;
 static unsigned cma_reserved_count __initdata;
 
@@ -207,16 +224,19 @@ static int __init cma_init_reserved_areas(void)
 	for (; i; --i, ++r) {
 		struct cma *cma;
 		cma = cma_create_area(PFN_DOWN(r->start),
-				      r->size >> PAGE_SHIFT);
-		if (!IS_ERR(cma))
+				      r->size >> PAGE_SHIFT, r->cma_size >> PAGE_SHIFT,
+				      r->threshold_size >> PAGE_SHIFT);
+		if (!IS_ERR(cma)) {
+			pr_info("%s: cma %p, base %lx\n", __func__, (void *)cma, (unsigned long)r->start);
 			dev_set_cma_area(r->dev, cma);
+		}
 	}
 	return 0;
 }
 core_initcall(cma_init_reserved_areas);
 
 /**
- * dma_declare_contiguous() - reserve area for contiguous memory handling
+ * dma_contiguous_reserve_area() - reserve area for contiguous memory handling
  *			      for particular device
  * @dev:   Pointer to device structure.
  * @size:  Size of the reserved memory.
@@ -227,15 +247,17 @@ core_initcall(cma_init_reserved_areas);
  * called by board specific code when early allocator (memblock or bootmem)
  * is still activate.
  */
-int __init dma_declare_contiguous(struct device *dev, phys_addr_t size,
-				  phys_addr_t base, phys_addr_t limit)
+int __init dma_contiguous_reserve_area(struct device *dev, phys_addr_t size,
+				  phys_addr_t base, phys_addr_t limit,
+				  phys_addr_t reserve_size, phys_addr_t threshold_size)
 {
 	struct cma_reserved *r = &cma_reserved[cma_reserved_count];
 	phys_addr_t alignment;
 
-	pr_debug("%s(size %lx, base %08lx, limit %08lx)\n", __func__,
-		 (unsigned long)size, (unsigned long)base,
-		 (unsigned long)limit);
+	pr_debug("%s(size %lx, base %08lx, limit %08lx, reserve_size %lx, threshold_size %lx)\n",
+		 __func__, (unsigned long)size, (unsigned long)base,
+		 (unsigned long)limit, (unsigned long)reserve_size,
+		 (unsigned long)threshold_size);
 
 	/* Sanity checks */
 	if (cma_reserved_count == ARRAY_SIZE(cma_reserved)) {
@@ -243,13 +265,16 @@ int __init dma_declare_contiguous(struct device *dev, phys_addr_t size,
 		return -ENOSPC;
 	}
 
-	if (!size)
+	if (!size || reserve_size > size)
 		return -EINVAL;
 
 	/* Sanitise input arguments */
 	alignment = PAGE_SIZE << max(MAX_ORDER - 1, pageblock_order);
 	base = ALIGN(base, alignment);
-	size = ALIGN(size, alignment);
+	if(!reserve_size)
+		size = ALIGN(size, alignment);
+	else
+		size = ALIGN((size - reserve_size), alignment) + reserve_size;
 	limit &= ~(alignment - 1);
 
 	/* Reserve memory */
@@ -280,12 +305,31 @@ int __init dma_declare_contiguous(struct device *dev, phys_addr_t size,
 	r->start = base;
 	r->size = size;
 	r->dev = dev;
+	r->cma_size = ALIGN((size - reserve_size), alignment);
+	r->threshold_size = ALIGN(threshold_size, PAGE_SIZE);
 	cma_reserved_count++;
-	pr_info("CMA: reserved %ld MiB at %08lx\n", (unsigned long)size / SZ_1M,
-		(unsigned long)base);
+	pr_info("CMA: reserved %ld MiB at %08lx(cma %ld MB, reserve %ld MB, threshold %ld MB)\n",
+		(unsigned long)size / SZ_1M, (unsigned long)base,
+		r->cma_size / SZ_1M, (unsigned long)reserve_size / SZ_1M,
+		(unsigned long)r->threshold_size / SZ_1M);
+#ifdef CONFIG_CMA
+	cmalimit += (unsigned long)size / SZ_1K ;
+	if(NULL != dev)
+	{
+		cma_areas[dma_declare_count].cma_phy_start	= (unsigned long)base;
+		cma_areas[dma_declare_count].cma_phy_end	= (unsigned long)(base + size);
+		cma_areas[dma_declare_count].flag			= CMA_AREA_DEVICE;
+	} else {
+		cma_areas[dma_declare_count].cma_phy_start	= (unsigned long)base;
+		cma_areas[dma_declare_count].cma_phy_end	= (unsigned long)(base + size);
+		cma_areas[dma_declare_count].flag			= CMA_AREA_GLOBAL;
+	}
+
+	dma_declare_count++;
+#endif
 
 	/* Architecture specific contiguous memory fixup. */
-	dma_contiguous_early_fixup(base, size);
+	dma_contiguous_early_fixup(base, r->cma_size);
 	return 0;
 err:
 	pr_err("CMA: failed to reserve %ld MiB\n", (unsigned long)size / SZ_1M);
@@ -310,6 +354,7 @@ struct page *dma_alloc_from_contiguous(struct device *dev, int count,
 	struct cma *cma = dev_get_cma_area(dev);
 	struct page *page = NULL;
 	int ret;
+	int reserve_drain = 0;
 
 	if (!cma || !cma->count)
 		return NULL;
@@ -328,13 +373,41 @@ struct page *dma_alloc_from_contiguous(struct device *dev, int count,
 	mutex_lock(&cma_mutex);
 
 	for (;;) {
+		ret = 0;
+
+		if(cma->threshold_count > 0 &&
+		    count >= cma->threshold_count &&
+		    !reserve_drain)
+			start = cma->cma_count;
+
 		pageno = bitmap_find_next_zero_area(cma->bitmap, cma->count,
 						    start, count, mask);
-		if (pageno >= cma->count)
-			break;
+		if (pageno >= cma->count) {
+			if(cma->threshold_count > 0 &&
+			    count >= cma->threshold_count &&
+			    !reserve_drain) {
+				reserve_drain = 1;
+				start = 0;
+				continue;
+			} else {
+				break;
+			}
+		}
 
 		pfn = cma->base_pfn + pageno;
-		ret = alloc_contig_range(pfn, pfn + count, MIGRATE_CMA);
+
+		if(pageno < cma->cma_count && pageno + count > cma->cma_count) {
+			if(reserve_drain)
+				break;
+			start = cma->cma_count;
+			continue;
+		}
+
+		if(pageno + count <= cma->cma_count)
+			ret = alloc_contig_range(pfn, pfn + count, MIGRATE_CMA);
+		else
+			pr_debug("%s(): allocate from reserved memory\n",
+				 __func__);
 		if (ret == 0) {
 			bitmap_set(cma->bitmap, pageno, count);
 			page = pfn_to_page(pfn);
@@ -372,7 +445,7 @@ bool dma_release_from_contiguous(struct device *dev, struct page *pages,
 	if (!cma || !pages)
 		return false;
 
-	pr_debug("%s(page %p)\n", __func__, (void *)pages);
+	pr_debug("%s(page %p, count %d)\n", __func__, (void *)pages, count);
 
 	pfn = page_to_pfn(pages);
 
@@ -383,8 +456,26 @@ bool dma_release_from_contiguous(struct device *dev, struct page *pages,
 
 	mutex_lock(&cma_mutex);
 	bitmap_clear(cma->bitmap, pfn - cma->base_pfn, count);
-	free_contig_range(pfn, count);
+	if(pfn + count <= cma->base_pfn + cma->cma_count)
+		free_contig_range(pfn, count);
 	mutex_unlock(&cma_mutex);
 
 	return true;
 }
+
+#ifdef CONFIG_CMA
+void cma_mem_info(cmainfo_t *cmainfo)
+{
+	unsigned int i;
+	cmainfo->totalcma = cmalimit;
+
+	for(i = 0; i < dma_declare_count; i++)
+	{
+		cmainfo->cma_areas[i].cma_phy_start = cma_areas[i].cma_phy_start;
+		cmainfo->cma_areas[i].cma_phy_end	= cma_areas[i].cma_phy_end;
+		cmainfo->cma_areas[i].flag			= cma_areas[i].flag;
+	}
+
+	cmainfo->nr_cma_areas = dma_declare_count;
+}
+#endif

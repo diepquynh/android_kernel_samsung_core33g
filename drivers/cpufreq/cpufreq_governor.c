@@ -26,8 +26,11 @@
 #include <linux/tick.h>
 #include <linux/types.h>
 #include <linux/workqueue.h>
+#include <linux/input.h>
 
 #include "cpufreq_governor.h"
+
+extern struct input_handler dbs_input_handler;
 
 static struct kobject *get_governor_parent_kobj(struct cpufreq_policy *policy)
 {

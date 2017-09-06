@@ -1,5 +1,4 @@
 ifeq ($(CONFIG_OF),y)
-
 # Keep at91 dtb files sorted alphabetically for each SoC
 # rm9200
 dtb-$(CONFIG_ARCH_AT91) += at91rm9200ek.dtb
@@ -210,13 +209,58 @@ dtb-$(CONFIG_ARCH_VT8500) += vt8500-bv07.dtb \
 	wm8850-w70v2.dtb
 dtb-$(CONFIG_ARCH_ZYNQ) += zynq-zc702.dtb
 
+ifeq ($(CONFIG_CMA),y)
+dtb-$(CONFIG_MACH_SPX15) += sprd-scx15_sp7715ea_cma.dtb
+dtb-$(CONFIG_MACH_KANAS_W) += sprd-scx35_kanas_w_cma.dtb
+else
+dtb-$(CONFIG_MACH_SPX15) += sprd-scx15_sp7715ea.dtb
+dtb-$(CONFIG_MACH_KANAS_W) += sprd-scx35_kanas_w.dtb
+endif
+dtb-$(CONFIG_MACH_CORSICA_VE_DT) += sprd-scx15_corsica_ve.dtb
+dtb-$(CONFIG_MACH_SPX35) += sprd-scx35_sp8830ec.dtb
+dtb-$(CONFIG_MACH_SP8830GEA) += sprd-scx35_sp8830gea.dtb
+dtb-$(CONFIG_MACH_SP8730SEA) += sprd-scx35_sp8730sea.dtb
+dtb-$(CONFIG_MACH_SP7730GGA) += sprd-scx35_sp7730gga.dtb
+dtb-$(CONFIG_MACH_SP7731GGA_LC) += sprd-scx35_sp7731gga_lc.dtb
+dtb-$(CONFIG_MACH_SP7731GEA) += sprd-scx35_sp7731gea.dtb
+dtb-$(CONFIG_MACH_SP7731GEA_FWVGA) += sprd-scx35_sp7731gea_fwvga.dtb
+dtb-$(CONFIG_MACH_SP7731GEAOPENPHONE) += sprd-scx35_sp7731geaopenphone.dtb
+dtb-$(CONFIG_MACH_TSHARKWSAMSUNG) += sprd-scx35_tsharkwsamsung.dtb
+dtb-$(CONFIG_MACH_CORE3_W) += sprd-scx35_core33g.dtb \
+				sprd-scx35_core33g_rev01.dtb \
+				sprd-scx35_core33g_rev01a.dtb \
+				sprd-scx35_core33g_rev02.dtb \
+				sprd-scx35_core33g_rev03.dtb \
+				sprd-scx35_core33g_rev04.dtb
+dtb-$(CONFIG_MACH_GRANDNEOVE3G) += sprd-scx35_grandneove3g_rev00.dtb \
+				sprd-scx35_grandneove3g_rev01.dtb
+dtb-$(CONFIG_MACH_SHANGHAI_W) += sprd-scx35_shanghai.dtb
+dtb-$(CONFIG_MACH_YOUNG23GDTV) += sprd-scx35_young23gdtv.dtb \
+				  sprd-scx35_young23gdtv_rev02.dtb \
+				  sprd-scx35_young23gdtv_rev03.dtb \
+				  sprd-scx35_young23gdtv_rev04.dtb
+dtb-$(CONFIG_MACH_VIVALTO5MVE3G) += sprd-scx35_vivalto5mve3g_rev00.dtb \
+				  sprd-scx35_vivalto5mve3g_rev01.dtb  \
+				  sprd-scx35_vivalto5mve3g_rev02.dtb
+dtb-$(CONFIG_MACH_GOYAVE3G) += sprd-scx35_goyave3g_rev00.dtb \
+				sprd-scx35_goyave3g_rev01.dtb \
+				sprd-scx35_goyave3g_rev02.dtb
+dtb-$(CONFIG_MACH_J13G) += sprd-scx35_j13g_rev00.dtb
+
+DTB_NAMES := $(subst $\",,$(CONFIG_BUILD_ARM_APPENDED_DTB_IMAGE_NAMES))
+ifneq ($(DTB_NAMES),)
+DTB_LIST := $(addsuffix .dtb,$(DTB_NAMES))
+else
+DTB_LIST := $(dtb-y)
+endif
+
 targets += dtbs
-targets += $(dtb-y)
+targets += $(DTB_LIST)
 endif
 
 # *.dtb used to be generated in the directory above. Clean out the
 # old build results so people don't accidentally use them.
-dtbs: $(addprefix $(obj)/, $(dtb-y))
+dtbs: $(addprefix $(obj)/, $(DTB_LIST))
 	$(Q)rm -f $(obj)/../*.dtb
 
 clean-files := *.dtb

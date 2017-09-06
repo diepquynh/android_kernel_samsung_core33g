@@ -2625,7 +2625,7 @@ static int s_show(struct seq_file *m, void *p)
 
 	v = va->vm;
 
-	seq_printf(m, "0x%pK-0x%pK %7ld",
+	seq_printf(m, "0x%lxK-0x%lxK %7ld",
 		v->addr, v->addr + v->size, v->size);
 
 	if (v->caller)

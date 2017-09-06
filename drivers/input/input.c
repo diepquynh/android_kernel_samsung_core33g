@@ -29,6 +29,10 @@
 #include <linux/rcupdate.h>
 #include "input-compat.h"
 
+#if defined(CONFIG_SPRD_DEBUG)
+	#include <mach/sprd_debug.h>
+#endif
+
 MODULE_AUTHOR("Vojtech Pavlik <vojtech@suse.cz>");
 MODULE_DESCRIPTION("Input core");
 MODULE_LICENSE("GPL");
@@ -290,8 +294,22 @@ static int input_get_disposition(struct input_dev *dev,
 			if (!!test_bit(code, dev->key) != !!value) {
 
 				__change_bit(code, dev->key);
+
+				#if defined(CONFIG_SPRD_DEBUG)
+					if(code != BTN_TOUCH) {
+						sprd_debug_check_crash_key(code,value);
+					}
+				#endif
+
 				disposition = INPUT_PASS_TO_HANDLERS;
 			}
+		}
+		else {
+			#if defined(CONFIG_SPRD_DEBUG)
+				if(code != BTN_TOUCH && value == 0) {
+					sprd_debug_check_crash_key(code,value);
+				}
+			#endif
 		}
 		break;
 
@@ -360,6 +378,10 @@ static int input_get_disposition(struct input_dev *dev,
 	return disposition;
 }
 
+#if defined(CONFIG_SEC_DEBUG)
+extern void sec_debug_check_crash_key(unsigned int code, int value);
+#endif
+
 static void input_handle_event(struct input_dev *dev,
 			       unsigned int type, unsigned int code, int value)
 {
@@ -422,6 +444,10 @@ void input_event(struct input_dev *dev,
 		 unsigned int type, unsigned int code, int value)
 {
 	unsigned long flags;
+
+#if defined(CONFIG_SEC_DEBUG)
+	sec_debug_check_crash_key(code, value);
+#endif
 
 	if (is_event_supported(type, dev->evbit, EV_MAX)) {
 
@@ -1662,9 +1688,11 @@ void input_reset_device(struct input_dev *dev)
 		 * Keys that have been pressed at suspend time are unlikely
 		 * to be still pressed when we resume.
 		 */
+	#if 0  // SAMSUNG_DO_NOT_USE this functionality
 		spin_lock_irq(&dev->event_lock);
 		input_dev_release_keys(dev);
 		spin_unlock_irq(&dev->event_lock);
+	#endif
 	}
 
 	mutex_unlock(&dev->mutex);
@@ -1680,6 +1708,11 @@ static int input_dev_suspend(struct device *dev)
 
 	if (input_dev->users)
 		input_dev_toggle(input_dev, false);
+
+#if defined(CONFIG_SEC_DEBUG)   // send dummy release event to avoid invalid key crash case
+	sec_debug_check_crash_key(KEY_VOLUMEUP, 0);
+	sec_debug_check_crash_key(KEY_VOLUMEDOWN, 0);
+#endif
 
 	mutex_unlock(&input_dev->mutex);
 

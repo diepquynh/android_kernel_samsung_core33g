@@ -60,6 +60,8 @@
 
 #define V9FS_MAGIC		0x01021997
 
+#define SDCARDFS_SUPER_MAGIC    0xb550ca10
+
 #define BDEVFS_MAGIC            0x62646576
 #define BINFMTFS_MAGIC          0x42494e4d
 #define DEVPTS_SUPER_MAGIC	0x1cd1

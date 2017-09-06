@@ -297,6 +297,8 @@ static int ffs_func_revmap_intf(struct ffs_function *func, u8 intf);
 
 /* The endpoints structures *************************************************/
 
+static unsigned int send_buffer[160+2048];
+static unsigned int recv_buffer[160+2048];
 struct ffs_ep {
 	struct usb_ep			*ep;	/* P: ffs->eps_lock */
 	struct usb_request		*req;	/* P: epfile->mutex */
@@ -755,9 +757,13 @@ static ssize_t ffs_epfile_io(struct file *file,
 	struct ffs_epfile *epfile = file->private_data;
 	struct ffs_ep *ep;
 	char *data = NULL;
-	ssize_t ret;
+	ssize_t ret, data_len;
 	int halt;
 
+	if(read)
+		data = &recv_buffer[8];
+	else
+		data = &send_buffer[8];
 	goto first_try;
 	do {
 		spin_unlock_irq(&epfile->ffs->eps_lock);
@@ -793,13 +799,14 @@ first_try:
 		}
 
 		/* Allocate & copy */
-		if (!halt && !data) {
-			data = kzalloc(len, GFP_KERNEL);
-			if (unlikely(!data))
-				return -ENOMEM;
+		if (!halt) {
+			if(len < 8192)
+				data_len = len;
+			else
+				data_len = 8192;
 
 			if (!read &&
-			    unlikely(__copy_from_user(data, buf, len))) {
+			    unlikely(__copy_from_user(data, buf, data_len))) {
 				ret = -EFAULT;
 				goto error;
 			}
@@ -837,7 +844,7 @@ first_try:
 		req->context  = &done;
 		req->complete = ffs_epfile_io_complete;
 		req->buf      = data;
-		req->length   = len;
+		req->length   = data_len;
 
 		ret = usb_ep_queue(ep->ep, req, GFP_ATOMIC);
 
@@ -850,25 +857,36 @@ first_try:
 			usb_ep_dequeue(ep->ep, req);
 		} else {
 			ret = ep->status;
-			if (read && ret > 0 &&
-			    unlikely(copy_to_user(buf, data, ret)))
-				ret = -EFAULT;
+			if (read && ret > 0){
+				ret = min_t(size_t, ret, len);
+				if(unlikely(copy_to_user(buf, data, ret)))
+					ret = -EFAULT;
+			}
 		}
 	}
 
 	mutex_unlock(&epfile->mutex);
 error:
-	kfree(data);
 	return ret;
 }
 
 static ssize_t
-ffs_epfile_write(struct file *file, const char __user *buf, size_t len,
-		 loff_t *ptr)
+ffs_epfile_write(struct file *file, const char __user *buf, size_t len, loff_t *ptr)
 {
+	int sent_len;
+	int temp_len=len;
+
 	ENTER();
 
-	return ffs_epfile_io(file, (char __user *)buf, len, 0);
+	do{
+		sent_len =  ffs_epfile_io(file, (char __user *)buf, temp_len,0);
+		if(sent_len > 0){
+			buf += sent_len;
+			temp_len -= sent_len;
+		} else return sent_len;
+	}while(temp_len>0);
+
+	return len;
 }
 
 static ssize_t
@@ -1561,7 +1579,12 @@ static int ffs_func_eps_enable(struct ffs_function *func)
 	spin_lock_irqsave(&func->ffs->eps_lock, flags);
 	do {
 		struct usb_endpoint_descriptor *ds;
-		ds = ep->descs[ep->descs[1] ? 1 : 0];
+		int desc_idx = ffs->gadget->speed == USB_SPEED_HIGH ? 1 : 0;
+		ds = ep->descs[desc_idx];
+		if (!ds) {
+			ret = -EINVAL;
+			break;
+		}
 
 		ep->ep->driver_data = ep;
 		ep->ep->desc = ds;
